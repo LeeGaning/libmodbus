@@ -54,6 +54,7 @@
 #if defined(_AIX) && !defined(MSG_DONTWAIT)
 #define MSG_DONTWAIT MSG_NONBLOCK
 #endif
+
 // clang-format on
 
 #include "modbus-private.h"
@@ -62,8 +63,38 @@
 #include "modbus-tcp.h"
 
 #ifdef OS_WIN32
-static int _modbus_tcp_init_win32(void)
-{
+
+#if defined(OS_WIN32)
+static int winsock_get_errno() {
+    switch (WSAGetLastError()) {
+        case WSANOTINITIALISED:
+            return WSANOTINITIALISED;  // no posix error code available?
+        case WSAENETDOWN:
+            return ENETDOWN;
+        case WSAEACCES:
+            return EACCES;
+        case WSAEADDRINUSE:
+            return EADDRINUSE;
+        case WSAEADDRNOTAVAIL:
+            return EADDRNOTAVAIL;
+        case WSAEFAULT:
+            return EFAULT;
+        case WSAEINPROGRESS:
+            return EINPROGRESS;
+        case WSAEINVAL:
+            return EINVAL;
+        case WSAENOBUFS:
+            return ENOBUFS;
+        case WSAENOTSOCK:
+            return ENOTSOCK;
+    }
+}
+#define WINSOCK_SET_ERRNO() errno = winsock_get_errno()
+#else
+#define WINSOCK_SET_ERRNO()
+#endif
+
+static int _modbus_tcp_init_win32(void) {
     /* Initialise Windows Socket API */
     WSADATA wsaData;
 
@@ -173,7 +204,11 @@ static ssize_t _modbus_tcp_send(modbus_t *ctx, const uint8_t *req, int req_lengt
        Requests not to send SIGPIPE on errors on stream oriented
        sockets when the other end breaks the connection.  The EPIPE
        error is still returned. */
-    return send(ctx->s, (const char *) req, req_length, MSG_NOSIGNAL);
+    int rc = send(ctx->s, (const char *)req, req_length, MSG_NOSIGNAL);
+    if (-1 == rc) {
+        WINSOCK_SET_ERRNO();
+    }
+    return rc;
 }
 
 static int _modbus_tcp_receive(modbus_t *ctx, uint8_t *req)
@@ -181,9 +216,13 @@ static int _modbus_tcp_receive(modbus_t *ctx, uint8_t *req)
     return _modbus_receive_msg(ctx, req, MSG_INDICATION);
 }
 
-static ssize_t _modbus_tcp_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)
+static ssize_t _modbus_tcp_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length) 
 {
-    return recv(ctx->s, (char *) rsp, rsp_length, 0);
+    int rc = recv(ctx->s, (char *)rsp, rsp_length, 0);
+    if (-1 == rc) {
+        WINSOCK_SET_ERRNO();
+    }
+    return rc;
 }
 
 static int _modbus_tcp_check_integrity(modbus_t *ctx, uint8_t *msg, const int msg_length)
@@ -277,6 +316,7 @@ static int _connect(int sockfd,
 #ifdef OS_WIN32
     int wsaError = 0;
     if (rc == -1) {
+        WINSOCK_SET_ERRNO();
         wsaError = WSAGetLastError();
     }
 
